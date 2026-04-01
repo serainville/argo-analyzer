@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,7 @@ func printConsole(r *models.Report, verbose bool) {
 
 	printMetrics(r)
 	printDurationMetrics(r)
+	printByTemplate(r)
 	printTopTemplates(r)
 	printSlowestLists(r)
 
@@ -181,10 +183,85 @@ func printDurationMetrics(r *models.Report) {
 	fmt.Println()
 }
 
+func printByTemplate(r *models.Report) {
+	if len(r.Metrics.ByTemplate) == 0 {
+		return
+	}
+	fmt.Println("  ── METRICS BY WORKFLOW TEMPLATE ────────────────────────────────────")
+	fmt.Println()
+
+	// Sort template names for stable output
+	names := make([]string, 0, len(r.Metrics.ByTemplate))
+	for k := range r.Metrics.ByTemplate {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+
+	// Run counts table
+	tCounts := newTable([]string{"WF Template", "Total", "Successful", "Failed", "Fail %",
+		"PLT", "APP", "DEV", "UNK"})
+	for _, name := range names {
+		s := r.Metrics.ByTemplate[name]
+		tCounts.Append(row(
+			name,
+			itoa(s.TotalCount),
+			itoa(s.SuccessCount),
+			itoa(s.FailCount),
+			pctOf(s.FailCount, s.TotalCount),
+			itoa(s.PlatformCount),
+			itoa(s.ApplicationCount),
+			itoa(s.DevExCount),
+			itoa(s.UnknownCount),
+		))
+	}
+	tCounts.Render()
+	fmt.Println()
+
+	// Duration stats table
+	tDur := newTable([]string{"WF Template", "Scope", "Count", "Min", "Max", "Mean", "Median"})
+	for _, name := range names {
+		s := r.Metrics.ByTemplate[name]
+		addRow := func(scope string, ds models.DurationStats) {
+			if ds.Count == 0 {
+				return
+			}
+			tDur.Append(row(
+				name, scope,
+				itoa(ds.Count),
+				formatDuration(ds.Min),
+				formatDuration(ds.Max),
+				formatDuration(ds.Mean),
+				formatDuration(ds.Median),
+			))
+		}
+		addRow("All", s.AllDuration)
+		addRow("  Successful", s.SuccessDuration)
+		addRow("  Failed", s.FailedDuration)
+	}
+	tDur.Render()
+	fmt.Println()
+}
+
 func printSlowestLists(r *models.Report) {
 	m := r.Metrics
 	if len(m.SlowestWorkflows) == 0 && len(m.SlowestTemplates) == 0 {
 		return
+	}
+
+	if len(m.SlowestWFTemplates) > 0 {
+		fmt.Println("  ── SLOWEST WORKFLOW TEMPLATES (median duration) ───────────────────")
+		fmt.Println()
+		t := newTable([]string{"#", "WF Template", "Runs", "Median Duration"})
+		for i, e := range m.SlowestWFTemplates {
+			t.Append(row(
+				strconv.Itoa(i+1),
+				e.Name,
+				e.Phase, // holds "N runs" string
+				formatDuration(e.Duration),
+			))
+		}
+		t.Render()
+		fmt.Println()
 	}
 
 	if len(m.SlowestWorkflows) > 0 {
@@ -229,7 +306,7 @@ func printPatterns(r *models.Report, thin string) {
 	fmt.Println("  ── RECURRING FAILURE PATTERNS ──────────────────────────────────────")
 	fmt.Println()
 
-	t := newTable([]string{"#", "Category", "Subtype", "Template", "Hits", "Workflows", "Flaky", "Representative Message"})
+	t := newTable([]string{"#", "WF Template", "Category", "Subtype", "Template", "Hits", "Workflows", "Flaky", "Representative Message"})
 	for i, p := range r.Patterns {
 		flaky := ""
 		if p.IsFlaky {
@@ -237,6 +314,7 @@ func printPatterns(r *models.Report, thin string) {
 		}
 		t.Append(row(
 			strconv.Itoa(i+1),
+			orDash(strings.Join(p.AffectedWFTemplates, ", ")),
 			string(p.Category),
 			string(p.Subtype),
 			orDash(p.TemplateName),
@@ -277,13 +355,9 @@ func printFailedWorkflows(r *models.Report, _ string) {
 	t := newTable([]string{"Workflow", "Template", "Namespace", "Duration", "Failed Nodes", "Categories"})
 	for _, wf := range r.FailedWorkflows {
 		cats := categoryBadges(wf.FailedNodes)
-		wfTemplate := ""
-		if len(wf.FailedNodes) > 0 {
-			wfTemplate = wf.FailedNodes[0].WorkflowTemplate
-		}
 		t.Append(row(
 			wf.Name,
-			orDash(wfTemplate),
+			orDash(wf.WorkflowTemplate),
 			wf.Namespace,
 			formatDuration(wf.Duration),
 			itoa(len(wf.FailedNodes)),
@@ -417,8 +491,24 @@ type jsonMetrics struct {
 	DurationAll         jsonDurationStats             `json:"duration_all_workflows"`
 	DurationFailed      jsonDurationStats             `json:"duration_failed_workflows"`
 	DurationSuccessful  jsonDurationStats             `json:"duration_successful_workflows"`
+	SlowestWFTemplates  []jsonSlowestEntry            `json:"slowest_wf_templates"`
 	SlowestWorkflows    []jsonSlowestEntry            `json:"slowest_workflows"`
 	SlowestTemplates    []jsonSlowestEntry            `json:"slowest_template_steps"`
+	ByTemplate          map[string]jsonTemplateStats  `json:"by_template,omitempty"`
+}
+
+type jsonTemplateStats struct {
+	TemplateName     string            `json:"template_name"`
+	TotalCount       int               `json:"total_count"`
+	SuccessCount     int               `json:"success_count"`
+	FailCount        int               `json:"fail_count"`
+	PlatformCount    int               `json:"platform_failures"`
+	ApplicationCount int               `json:"application_failures"`
+	DevExCount       int               `json:"devex_failures"`
+	UnknownCount     int               `json:"unknown_failures"`
+	AllDuration      jsonDurationStats `json:"duration_all"`
+	SuccessDuration  jsonDurationStats `json:"duration_successful"`
+	FailedDuration   jsonDurationStats `json:"duration_failed"`
 }
 
 type jsonPattern struct {
@@ -433,6 +523,7 @@ type jsonPattern struct {
 	LastSeen              string   `json:"last_seen,omitempty"`
 	IsFlaky               bool     `json:"is_flaky"`
 	TypicalExitCodes      []string `json:"typical_exit_codes,omitempty"`
+	AffectedWFTemplates   []string `json:"affected_wf_templates,omitempty"`
 	RepresentativeMessage string   `json:"representative_message"`
 }
 
@@ -481,8 +572,10 @@ func writeJSON(report *models.Report, path string) error {
 			DurationAll:         toJSONDuration(report.Metrics.AllWorkflowDuration),
 			DurationFailed:      toJSONDuration(report.Metrics.FailedDuration),
 			DurationSuccessful:  toJSONDuration(report.Metrics.SuccessfulDuration),
+			SlowestWFTemplates:  toJSONSlowest(report.Metrics.SlowestWFTemplates),
 			SlowestWorkflows:    toJSONSlowest(report.Metrics.SlowestWorkflows),
 			SlowestTemplates:    toJSONSlowest(report.Metrics.SlowestTemplates),
+			ByTemplate:          toJSONByTemplate(report.Metrics.ByTemplate),
 		},
 		Insights: report.Insights,
 	}
@@ -498,6 +591,7 @@ func writeJSON(report *models.Report, path string) error {
 			AffectedNamespaces:    p.AffectedNamespaces,
 			IsFlaky:               p.IsFlaky,
 			TypicalExitCodes:      p.TypicalExitCodes,
+			AffectedWFTemplates:   p.AffectedWFTemplates,
 			RepresentativeMessage: p.RepresentativeMessage,
 		}
 		if !p.FirstSeen.IsZero() {
@@ -546,6 +640,30 @@ func writeJSON(report *models.Report, path string) error {
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return enc.Encode(jr)
+}
+
+// toJSONByTemplate converts the ByTemplate map to its JSON-serialisable form.
+func toJSONByTemplate(byTmpl map[string]models.WorkflowTemplateStats) map[string]jsonTemplateStats {
+	if len(byTmpl) == 0 {
+		return nil
+	}
+	out := make(map[string]jsonTemplateStats, len(byTmpl))
+	for k, s := range byTmpl {
+		out[k] = jsonTemplateStats{
+			TemplateName:     s.TemplateName,
+			TotalCount:       s.TotalCount,
+			SuccessCount:     s.SuccessCount,
+			FailCount:        s.FailCount,
+			PlatformCount:    s.PlatformCount,
+			ApplicationCount: s.ApplicationCount,
+			DevExCount:       s.DevExCount,
+			UnknownCount:     s.UnknownCount,
+			AllDuration:      toJSONDuration(s.AllDuration),
+			SuccessDuration:  toJSONDuration(s.SuccessDuration),
+			FailedDuration:   toJSONDuration(s.FailedDuration),
+		}
+	}
+	return out
 }
 
 // toJSONDuration converts a DurationStats to its JSON-serialisable form.

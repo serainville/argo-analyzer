@@ -27,6 +27,7 @@ func Detect(workflows []models.AnalyzedWorkflow) []models.FailurePattern {
 		wfSet     map[string]struct{}
 		nsSet     map[string]struct{}
 		codeSet   map[string]struct{}
+		wfTmplSet map[string]struct{}
 	}
 
 	buckets := map[string]*bucket{}
@@ -50,6 +51,7 @@ func Detect(workflows []models.AnalyzedWorkflow) []models.FailurePattern {
 					wfSet:     map[string]struct{}{},
 					nsSet:     map[string]struct{}{},
 					codeSet:   map[string]struct{}{},
+					wfTmplSet: map[string]struct{}{},
 				}
 				buckets[key] = b
 			}
@@ -57,6 +59,9 @@ func Detect(workflows []models.AnalyzedWorkflow) []models.FailurePattern {
 			b.pattern.OccurrenceCount++
 			b.wfSet[wf.Name] = struct{}{}
 			b.nsSet[wf.Namespace] = struct{}{}
+			if wf.WorkflowTemplate != "" {
+				b.wfTmplSet[wf.WorkflowTemplate] = struct{}{}
+			}
 			if node.ExitCode != "" {
 				b.codeSet[node.ExitCode] = struct{}{}
 			}
@@ -86,6 +91,7 @@ func Detect(workflows []models.AnalyzedWorkflow) []models.FailurePattern {
 		p.AffectedWorkflows = sortedKeys(b.wfSet)
 		p.AffectedNamespaces = sortedKeys(b.nsSet)
 		p.TypicalExitCodes = sortedKeys(b.codeSet)
+		p.AffectedWFTemplates = sortedKeys(b.wfTmplSet)
 		p.RepresentativeMessage = mostCommon(b.msgCounts)
 
 		if _, flaky := flakyTemplates[p.TemplateName]; flaky {

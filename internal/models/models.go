@@ -164,14 +164,15 @@ type FailedNode struct {
 
 // AnalyzedWorkflow is the fully analyzed result of a single workflow.
 type AnalyzedWorkflow struct {
-	Name        string
-	Namespace   string
-	Phase       string
-	StartedAt   time.Time
-	FinishedAt  time.Time
-	Duration    time.Duration
-	Message     string
-	FailedNodes []FailedNode
+	Name             string
+	WorkflowTemplate string // metadata.labels["workflows.argoproj.io/workflow-template"]
+	Namespace        string
+	Phase            string
+	StartedAt        time.Time
+	FinishedAt       time.Time
+	Duration         time.Duration
+	Message          string
+	FailedNodes      []FailedNode
 }
 
 // ── Pattern detection ─────────────────────────────────────────────────────────
@@ -187,6 +188,7 @@ type FailurePattern struct {
 	AffectedNamespaces    []string // deduplicated, sorted
 	FirstSeen             time.Time
 	LastSeen              time.Time
+	AffectedWFTemplates   []string // deduplicated workflow-template names
 	IsFlaky               bool     // failed then retried+succeeded in the same workflow
 	TypicalExitCodes      []string // deduplicated
 	RepresentativeMessage string
@@ -283,6 +285,34 @@ type Metrics struct {
 
 	// Slowest individual template steps across all failed workflow nodes (top 10)
 	SlowestTemplates []SlowestEntry
+
+	// Slowest workflow templates (top 10, by median duration across all runs)
+	SlowestWFTemplates []SlowestEntry
+
+	// Per-workflow-template breakdowns, keyed by template name.
+	// Each entry holds counts and durations for runs belonging to that template.
+	ByTemplate map[string]WorkflowTemplateStats
+}
+
+// WorkflowTemplateStats holds metrics scoped to a single workflow template.
+type WorkflowTemplateStats struct {
+	TemplateName string
+
+	// Run counts
+	TotalCount   int
+	SuccessCount int
+	FailCount    int
+
+	// Failure category breakdown (node-level)
+	PlatformCount    int
+	ApplicationCount int
+	DevExCount       int
+	UnknownCount     int
+
+	// Duration stats split by outcome
+	AllDuration     DurationStats
+	SuccessDuration DurationStats
+	FailedDuration  DurationStats
 }
 
 // Report is the complete output of a full analysis run.

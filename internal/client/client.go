@@ -15,6 +15,17 @@
 //  3. Fetches the full detail only for those failed workflows.
 //  4. Returns the merged result: successful workflows from the list (no nodes
 //     needed) + fully-hydrated failed workflows.
+//
+// Rate limiting
+// ─────────────
+// All outbound requests pass through a token-bucket limiter so the tool never
+// floods the Argo server. The bucket is refilled at a steady rate
+// (Config.RatePerSecond tokens/sec) up to a maximum of Config.Burst tokens.
+// If the bucket is empty the call blocks until a token is available — no
+// requests are ever silently dropped.
+//
+// Defaults: 5 requests/sec, burst of 5.
+// Disable:  set RatePerSecond to 0 (unlimited).
 package client
 
 import (
@@ -25,6 +36,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"time"
 
 	"argo-analyzer/internal/models"
@@ -33,7 +45,82 @@ import (
 const (
 	phasesFailed = "Failed"
 	phasesError  = "Error"
+
+	defaultRatePerSecond = 5
+	defaultBurst         = 5
 )
+
+// rateLimiter is a token-bucket rate limiter implemented with a buffered
+// channel and a background refill goroutine.
+//
+// Design: the channel holds up to `burst` tokens. The refiller adds one token
+// every (1s / rate) interval, blocking when the bucket is full. Callers
+// consume one token per request by receiving from the channel, blocking when
+// empty. This gives smooth, predictable pacing with no external dependencies.
+type rateLimiter struct {
+	tokens chan struct{}
+	stop   chan struct{}
+	once   sync.Once
+}
+
+func newRateLimiter(ratePerSecond, burst int) *rateLimiter {
+	if burst <= 0 {
+		burst = 1
+	}
+	rl := &rateLimiter{
+		tokens: make(chan struct{}, burst),
+		stop:   make(chan struct{}),
+	}
+	// Pre-fill the bucket so the first `burst` requests are not delayed.
+	for i := 0; i < burst; i++ {
+		rl.tokens <- struct{}{}
+	}
+	interval := time.Second / time.Duration(ratePerSecond)
+	go rl.refill(interval)
+	return rl
+}
+
+// refill adds one token to the bucket every interval until stopped.
+func (rl *rateLimiter) refill(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-rl.stop:
+			return
+		case <-ticker.C:
+			select {
+			case rl.tokens <- struct{}{}:
+				// token added
+			default:
+				// bucket full — discard
+			}
+		}
+	}
+}
+
+// Wait blocks until a token is available.
+func (rl *rateLimiter) Wait() {
+	<-rl.tokens
+}
+
+// Stop shuts down the background refill goroutine.
+func (rl *rateLimiter) Stop() {
+	rl.once.Do(func() { close(rl.stop) })
+}
+
+// noopLimiter is used when rate limiting is disabled (RatePerSecond == 0).
+type noopLimiter struct{}
+
+func (noopLimiter) Wait() {}
+func (noopLimiter) Stop() {}
+
+type limiter interface {
+	Wait()
+	Stop()
+}
+
+// ── Client ────────────────────────────────────────────────────────────────────
 
 // Client is the Argo Workflows REST API client.
 type Client struct {
@@ -41,6 +128,7 @@ type Client struct {
 	namespace  string
 	token      string
 	httpClient *http.Client
+	limiter    limiter
 }
 
 // Config holds client configuration.
@@ -50,6 +138,17 @@ type Config struct {
 	Token              string
 	InsecureSkipVerify bool
 	Timeout            time.Duration
+
+	// RatePerSecond is the maximum number of requests sent to the Argo server
+	// per second. The token bucket is pre-filled to Burst tokens so short
+	// bursts are allowed without waiting.
+	// Default: 5. Set to 0 to disable rate limiting entirely.
+	RatePerSecond int
+
+	// Burst is the maximum number of requests that may be sent back-to-back
+	// before pacing kicks in. Must be >= 1 if RatePerSecond > 0.
+	// Default: equal to RatePerSecond.
+	Burst int
 }
 
 // New creates a new Argo Workflows client.
@@ -57,6 +156,21 @@ func New(cfg Config) *Client {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = 30 * time.Second
 	}
+
+	// Apply rate-limit defaults
+	var lim limiter
+	if cfg.RatePerSecond == 0 {
+		lim = noopLimiter{}
+	} else {
+		rate := cfg.RatePerSecond
+		burst := cfg.Burst
+		if burst <= 0 {
+			burst = rate
+		}
+		lim = newRateLimiter(rate, burst)
+		fmt.Printf("Rate limiter: %d req/s (burst %d)\n", rate, burst)
+	}
+
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: cfg.InsecureSkipVerify},
 	}
@@ -65,8 +179,17 @@ func New(cfg Config) *Client {
 		namespace:  cfg.Namespace,
 		token:      cfg.Token,
 		httpClient: &http.Client{Timeout: cfg.Timeout, Transport: transport},
+		limiter:    lim,
 	}
 }
+
+// Close stops the background rate-limit refill goroutine. Safe to call
+// multiple times. Optional — the goroutine is also reclaimed at process exit.
+func (c *Client) Close() {
+	c.limiter.Stop()
+}
+
+// ── Public fetch methods ──────────────────────────────────────────────────────
 
 // FetchByCount retrieves the most recent `limit` archived workflows.
 // It fetches summary data for all workflows, then hydrates full node graphs
@@ -88,8 +211,6 @@ func (c *Client) FetchByTimeWindow(from, to time.Time) ([]models.Workflow, error
 	fmt.Printf("Fetching archived workflows from %s to %s...\n",
 		from.Format(time.RFC3339), to.Format(time.RFC3339))
 
-	// Fetch all pages; filter by time client-side (the list API has no
-	// server-side time filter for archived workflows).
 	var summaries []models.Workflow
 	continueToken := ""
 	for {
@@ -117,8 +238,6 @@ func (c *Client) FetchByTimeWindow(from, to time.Time) ([]models.Workflow, error
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-// fetchSummaries pages through the archived-workflow list until it has
-// collected `limit` entries (or exhausted all pages).
 func (c *Client) fetchSummaries(limit int, labelSelector, fieldSelector string) ([]models.Workflow, error) {
 	var all []models.Workflow
 	continueToken := ""
@@ -151,11 +270,7 @@ func (c *Client) fetchSummaries(limit int, labelSelector, fieldSelector string) 
 	return all, nil
 }
 
-// hydrateFailed takes a list of workflow summaries, fetches the full detail
-// (including status.nodes) for each failed workflow, and returns the merged
-// slice: succeeded summaries as-is, failed ones replaced with full detail.
 func (c *Client) hydrateFailed(summaries []models.Workflow) ([]models.Workflow, error) {
-	// Count how many we need to hydrate for progress reporting.
 	failCount := 0
 	for _, wf := range summaries {
 		if isFailedPhase(wf.Status.Phase) {
@@ -171,14 +286,11 @@ func (c *Client) hydrateFailed(summaries []models.Workflow) ([]models.Workflow, 
 
 	for _, wf := range summaries {
 		if !isFailedPhase(wf.Status.Phase) {
-			// Successful (or still-running) workflows: summary is sufficient.
 			result = append(result, wf)
 			continue
 		}
 
 		if wf.Metadata.UID == "" {
-			// No UID — can't fetch detail; keep the summary as-is so it still
-			// counts toward the failure total even without node data.
 			fmt.Printf("  Warning: workflow %s has no UID, skipping node hydration\n", wf.Metadata.Name)
 			result = append(result, wf)
 			continue
@@ -186,7 +298,6 @@ func (c *Client) hydrateFailed(summaries []models.Workflow) ([]models.Workflow, 
 
 		full, err := c.fetchWorkflowByUID(wf.Metadata.UID)
 		if err != nil {
-			// Non-fatal: log and fall back to the summary without nodes.
 			fmt.Printf("  Warning: could not fetch detail for %s (%s): %v\n",
 				wf.Metadata.Name, wf.Metadata.UID, err)
 			result = append(result, wf)
@@ -203,7 +314,6 @@ func (c *Client) hydrateFailed(summaries []models.Workflow) ([]models.Workflow, 
 	return result, nil
 }
 
-// fetchPage retrieves one page of archived workflow summaries.
 func (c *Client) fetchPage(limit int, continueToken, labelSelector, fieldSelector string) ([]models.Workflow, string, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/archived-workflows", c.baseURL)
 
@@ -235,11 +345,8 @@ func (c *Client) fetchPage(limit int, continueToken, labelSelector, fieldSelecto
 	return wfList.Items, wfList.Metadata.Continue, nil
 }
 
-// fetchWorkflowByUID fetches the full workflow detail including status.nodes.
 func (c *Client) fetchWorkflowByUID(uid string) (*models.Workflow, error) {
-	endpoint := fmt.Sprintf("%s/api/v1/archived-workflows/%s", c.baseURL, uid)
-
-	body, err := c.get(endpoint)
+	body, err := c.get(fmt.Sprintf("%s/api/v1/archived-workflows/%s", c.baseURL, uid))
 	if err != nil {
 		return nil, err
 	}
@@ -252,8 +359,11 @@ func (c *Client) fetchWorkflowByUID(uid string) (*models.Workflow, error) {
 	return &wf, nil
 }
 
-// get performs an authenticated GET and returns the response body.
+// get acquires a rate-limit token, then performs an authenticated GET.
+// All requests — list pages and individual workflow detail — pass through here.
 func (c *Client) get(rawURL string) ([]byte, error) {
+	c.limiter.Wait() // blocks until a token is available
+
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating request for %s: %w", rawURL, err)
@@ -272,7 +382,8 @@ func (c *Client) get(rawURL string) ([]byte, error) {
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s returned HTTP %d: %s", rawURL, resp.StatusCode, truncate(string(body), 200))
+		return nil, fmt.Errorf("GET %s returned HTTP %d: %s",
+			rawURL, resp.StatusCode, truncate(string(body), 200))
 	}
 
 	return body, nil
@@ -285,6 +396,8 @@ func (c *Client) setHeaders(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 }
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 func isFailedPhase(phase string) bool {
 	return phase == phasesFailed || phase == phasesError
