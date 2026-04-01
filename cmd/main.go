@@ -16,11 +16,13 @@ import (
 
 var (
 	// Connection flags
-	server    string
-	namespace string
-	token     string
-	insecure  bool
-	timeout   int
+	server        string
+	namespace     string
+	token         string
+	insecure      bool
+	timeout       int
+	ratePerSecond int
+	burst         int
 
 	// Standard output flags
 	csvFile  string
@@ -101,6 +103,8 @@ func init() {
 	pf.StringVarP(&token, "token", "t", "", "Bearer token (or set ARGO_TOKEN env var)")
 	pf.BoolVar(&insecure, "insecure", false, "Skip TLS certificate verification")
 	pf.IntVar(&timeout, "timeout", 30, "HTTP request timeout in seconds")
+	pf.IntVar(&ratePerSecond, "rate", 5, "Maximum Argo API requests per second (0 = unlimited)")
+	pf.IntVar(&burst, "burst", 5, "Maximum burst size for the rate limiter")
 
 	// Standard outputs
 	pf.StringVar(&csvFile, "csv", "", "Write CSV report to this path")
@@ -136,6 +140,7 @@ func runCount(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer c.Close()
 	workflows, err := c.FetchByCount(countLimit)
 	if err != nil {
 		return fmt.Errorf("fetching workflows: %w", err)
@@ -171,6 +176,7 @@ func runWindow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer c.Close()
 	workflows, err := c.FetchByTimeWindow(from, to)
 	if err != nil {
 		return fmt.Errorf("fetching workflows: %w", err)
@@ -231,6 +237,8 @@ func buildClient() (*client.Client, error) {
 		Token:              tok,
 		InsecureSkipVerify: insecure,
 		Timeout:            time.Duration(timeout) * time.Second,
+		RatePerSecond:      ratePerSecond,
+		Burst:              burst,
 	}), nil
 }
 
