@@ -1,6 +1,6 @@
 # Argo Workflows — Failure Analysis Report
 
-**Generated:** Tue, 31 Mar 2026 23:13:43 EDT  
+**Generated:** Tue, 31 Mar 2026 23:54:46 EDT  
 **Query:** count = 50 most recent  
 
 ## Summary
@@ -28,6 +28,32 @@
 | Successful | 5 | 38s | 1m05s | 44s | 40s |
 | Failed | 45 | — | 15m40s | 1m19s | 40s |
 
+## Metrics by Workflow Template
+
+### Run Counts
+
+| WF Template | Total | Successful | Failed | Fail % | PLT | APP | DEV | UNK |
+|-------------|------:|-----------:|-------:|-------:|----:|----:|----:|----:|
+| (unknown) | 39 | 0 | 39 | 100.0% | 0 | 52 | 0 | 11 |
+| ci-java | 11 | 5 | 6 | 54.5% | 0 | 0 | 0 | 0 |
+
+### Durations
+
+| WF Template | Scope | Count | Min | Max | Mean | Median |
+|-------------|-------|------:|----:|----:|-----:|-------:|
+| (unknown) | All | 39 | — | 15m40s | 1m24s | 10s |
+|  |   Failed | 39 | — | 15m40s | 1m24s | 10s |
+| ci-java | All | 11 | 38s | 1m05s | 45s | 40s |
+|  |   Successful | 5 | 38s | 1m05s | 44s | 40s |
+|  |   Failed | 6 | 40s | 52s | 45s | 45s |
+
+## Slowest Workflow Templates (Top 10, by median duration)
+
+| # | WF Template | Runs | Median Duration |
+|---|------------|-----:|----------------:|
+| 1 | ci-java | 11 runs | 40s |
+| 2 | (unknown) | 39 runs | 10s |
+
 ## Slowest Workflows (Top 10)
 
 | # | Workflow | WF Template | Phase | Duration |
@@ -51,12 +77,12 @@
 | 2 | `sonar-scan` | sonar-scan | `app-ci-push-mk968` | 5m19s |
 | 3 | `sonar-scan` | sonar-scan | `app-ci-push-4bh4d` | 1m09s |
 | 4 | `vuln-scan` | repo-vuln-scan | `app-ci-push-4bh4d` | 31s |
-| 5 | `vuln-scan` | repo-vuln-scan | `app-ci-push-dqsd2` | 29s |
-| 6 | `vuln-scan` | repo-vuln-scan | `app-ci-push-m868l` | 29s |
+| 5 | `vuln-scan` | repo-vuln-scan | `app-ci-push-m868l` | 29s |
+| 6 | `vuln-scan` | repo-vuln-scan | `app-ci-push-dqsd2` | 29s |
 | 7 | `vuln-scan` | repo-vuln-scan | `app-ci-push-qwm67` | 28s |
 | 8 | `vuln-scan` | repo-vuln-scan | `app-ci-push-r6g8j` | 28s |
-| 9 | `vuln-scan` | repo-vuln-scan | `app-ci-push-7hh4b` | 27s |
-| 10 | `vuln-scan` | repo-vuln-scan | `app-ci-push-f4g95` | 27s |
+| 9 | `vuln-scan` | repo-vuln-scan | `app-ci-push-ppf7v` | 27s |
+| 10 | `vuln-scan` | repo-vuln-scan | `app-ci-push-7hh4b` | 27s |
 
 ## Top Failing Templates
 
@@ -70,22 +96,22 @@
 
 ## Recurring Failure Patterns
 
-| # | Category | Subtype | Template | Occurrences | Workflows | Flaky | Representative Message |
-|---|----------|---------|----------|------------:|----------:|:-----:|------------------------|
-| 1 | application | `exit_nonzero` | `repo-vuln-scan` | 18 | 18 |  | main: Error (exit code 1) |
-| 2 | application | `exit_nonzero` | `checkout` | 14 | 14 |  | main: Error (exit code 128) |
-| 3 | application | `exit_nonzero` | `sonar-scan` | 7 | 7 |  | main: Error (exit code 1) |
-| 4 | application | `exit_nonzero` | `sonar-scan` | 6 | 6 |  | main: Error (exit code 2) |
-| 5 | application | `exit_nonzero` | `code-quality` | 3 | 3 |  | main: Error (exit code 2) |
-| 6 | unknown | `unclassified` | `sonar-scan` | 2 | 2 |  | build-sonar-truststore: Error (exit code 2) |
-| 7 | unknown | `unclassified` | `sonar-scan` | 2 | 2 |  | workflow shutdown with strategy:  Stop |
-| 8 | unknown | `unclassified` | — | 2 | 2 |  | invalid spec: templates.app-ci.tasks.checkout templates.checkout inputs.param... |
-| 9 | application | `permission_denied` | `checkout` | 2 | 2 |  | task 'app-ci-push-hd4pw.checkout' errored: pods "app-ci-push-hd4pw-checkout-3... |
-| 10 | unknown | `unclassified` | — | 2 | 2 |  | invalid spec: templates.app-ci.tasks.go-pipeline templates.go-pipeline.inputs... |
-| 11 | application | `exit_nonzero` | `code-quality` | 2 | 2 |  | main: Error (exit code 1) |
-| 12 | unknown | `unclassified` | `sonar-scan` | 1 | 1 |  | workflow shutdown with strategy:  Terminate |
-| 13 | unknown | `unclassified` | — | 1 | 1 |  | invalid spec: templates.app-ci.tasks.go-pipeline templates.go-pipeline.tasks.... |
-| 14 | unknown | `unclassified` | `code-quality` | 1 | 1 |  | build-truststore: Error (exit code 2) |
+| # | WF Template | Category | Subtype | Template | Occurrences | Workflows | Flaky | Representative Message |
+|---|------------|----------|---------|----------|------------:|----------:|:-----:|------------------------|
+| 1 | — | application | `exit_nonzero` | `repo-vuln-scan` | 18 | 18 |  | main: Error (exit code 1) |
+| 2 | — | application | `exit_nonzero` | `checkout` | 14 | 14 |  | main: Error (exit code 128) |
+| 3 | — | application | `exit_nonzero` | `sonar-scan` | 7 | 7 |  | main: Error (exit code 1) |
+| 4 | — | application | `exit_nonzero` | `sonar-scan` | 6 | 6 |  | main: Error (exit code 2) |
+| 5 | — | application | `exit_nonzero` | `code-quality` | 3 | 3 |  | main: Error (exit code 2) |
+| 6 | — | unknown | `unclassified` | `sonar-scan` | 2 | 2 |  | build-sonar-truststore: Error (exit code 2) |
+| 7 | — | unknown | `unclassified` | `sonar-scan` | 2 | 2 |  | workflow shutdown with strategy:  Stop |
+| 8 | — | unknown | `unclassified` | — | 2 | 2 |  | invalid spec: templates.app-ci.tasks.checkout templates.checkout inputs.param... |
+| 9 | — | application | `permission_denied` | `checkout` | 2 | 2 |  | task 'app-ci-push-hd4pw.checkout' errored: pods "app-ci-push-hd4pw-checkout-3... |
+| 10 | — | unknown | `unclassified` | — | 2 | 2 |  | invalid spec: templates.app-ci.tasks.go-pipeline templates.go-pipeline.inputs... |
+| 11 | — | application | `exit_nonzero` | `code-quality` | 2 | 2 |  | main: Error (exit code 1) |
+| 12 | — | unknown | `unclassified` | `sonar-scan` | 1 | 1 |  | workflow shutdown with strategy:  Terminate |
+| 13 | — | unknown | `unclassified` | — | 1 | 1 |  | invalid spec: templates.app-ci.tasks.go-pipeline templates.go-pipeline.tasks.... |
+| 14 | — | unknown | `unclassified` | `code-quality` | 1 | 1 |  | build-truststore: Error (exit code 2) |
 
 ## DevEx Insights & Recommendations
 
@@ -152,14 +178,14 @@
 
 | WF Template | Node | Template | Path | Category | Subtype | Confidence | Exit | Failure Reason |
 |-------------|------|----------|------|----------|---------|:----------:|:----:|----------------|
-| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-dqsd2 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-dqsd2 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
-| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-97frk → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
+| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-dqsd2 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-97frk → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 2 | main: Error (exit code 2) |
+| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-97frk → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-248m8 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-248m8 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 2 | main: Error (exit code 2) |
-| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-cbdvf → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-cbdvf → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 2 | main: Error (exit code 2) |
+| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-cbdvf → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-qwm67 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 2 | main: Error (exit code 2) |
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-qwm67 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-dflgn → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 2 | main: Error (exit code 2) |
@@ -168,26 +194,26 @@
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-f8mwb → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-bxzb6 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-bxzb6 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
-| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-ppf7v → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-ppf7v → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
+| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-ppf7v → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-r6g8j → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-r6g8j → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-nhch5 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-nhch5 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-wqkx5 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-wqkx5 → checkout → detect-language → ja... | unknown | `unclassified` | low | — | workflow shutdown with strategy:  Terminate |
-| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-7hh4b → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-7hh4b → checkout → detect-language → ja... | unknown | `unclassified` | low | — | build-sonar-truststore: Error (exit code 2) |
+| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-7hh4b → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-f4g95 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-f4g95 → checkout → detect-language → ja... | unknown | `unclassified` | low | — | build-sonar-truststore: Error (exit code 2) |
-| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-m868l → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-m868l → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
+| — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-m868l → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-4xnfm → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-4xnfm → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 | — | `sonar-scan` | `sonar-scan` | app-ci-push-4bh4d → checkout → detect-language → ja... | unknown | `unclassified` | low | — | workflow shutdown with strategy:  Stop |
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-4bh4d → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
-| — | `sonar-scan` | `sonar-scan` | app-ci-push-mk968 → checkout → detect-language → ja... | unknown | `unclassified` | low | — | workflow shutdown with strategy:  Stop |
 | — | `vuln-scan` | `repo-vuln-scan` | app-ci-push-mk968 → checkout → detect-language → ja... | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
+| — | `sonar-scan` | `sonar-scan` | app-ci-push-mk968 → checkout → detect-language → ja... | unknown | `unclassified` | low | — | workflow shutdown with strategy:  Stop |
 | — | `checkout` | `checkout` | app-ci-push-zrbq7 → checkout | application | `exit_nonzero` | medium | 128 | main: Error (exit code 128) |
 | — | `checkout` | `checkout` | app-ci-push-xb45w → checkout | application | `exit_nonzero` | medium | 128 | main: Error (exit code 128) |
 | — | `checkout` | `checkout` | app-ci-push-cxhlt → checkout | application | `exit_nonzero` | medium | 128 | main: Error (exit code 128) |
@@ -217,4 +243,4 @@
 | `ci-java` | `code-quality` | `code-quality` | ci-java-pxz9t → build → clone-repo → code-quality | application | `exit_nonzero` | medium | 1 | main: Error (exit code 1) |
 
 ---
-*Report generated by argo-analyzer on Tue, 31 Mar 2026 23:13:43 EDT*
+*Report generated by argo-analyzer on Tue, 31 Mar 2026 23:54:46 EDT*
