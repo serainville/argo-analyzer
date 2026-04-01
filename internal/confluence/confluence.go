@@ -29,6 +29,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -139,6 +140,49 @@ func RenderMarkdown(report *models.Report) string {
 		b.WriteString("\n")
 	}
 
+	// ── Per-template metrics ─────────────────────────────────────────────────
+	if len(m.ByTemplate) > 0 {
+		b.WriteString("## Metrics by Workflow Template\n\n")
+
+		// Counts table
+		b.WriteString("### Run Counts\n\n")
+		b.WriteString("| WF Template | Total | Successful | Failed | Fail % | PLT | APP | DEV | UNK |\n")
+		b.WriteString("|-------------|------:|-----------:|-------:|-------:|----:|----:|----:|----:|\n")
+		for _, name := range sortedKeys(m.ByTemplate) {
+			s := m.ByTemplate[name]
+			b.WriteString(fmt.Sprintf("| %s | %d | %d | %d | %s | %d | %d | %d | %d |\n",
+				name, s.TotalCount, s.SuccessCount, s.FailCount,
+				mdPctOf(s.FailCount, s.TotalCount),
+				s.PlatformCount, s.ApplicationCount, s.DevExCount, s.UnknownCount,
+			))
+		}
+		b.WriteString("\n")
+
+		// Duration table
+		b.WriteString("### Durations\n\n")
+		b.WriteString("| WF Template | Scope | Count | Min | Max | Mean | Median |\n")
+		b.WriteString("|-------------|-------|------:|----:|----:|-----:|-------:|\n")
+		for _, name := range sortedKeys(m.ByTemplate) {
+			s := m.ByTemplate[name]
+			writeMDTmplDurRow(&b, name, "All", s.AllDuration)
+			writeMDTmplDurRow(&b, "", "  Successful", s.SuccessDuration)
+			writeMDTmplDurRow(&b, "", "  Failed", s.FailedDuration)
+		}
+		b.WriteString("\n")
+	}
+
+	// ── Slowest WF templates ─────────────────────────────────────────────────
+	if len(m.SlowestWFTemplates) > 0 {
+		b.WriteString("## Slowest Workflow Templates (Top 10, by median duration)\n\n")
+		b.WriteString("| # | WF Template | Runs | Median Duration |\n")
+		b.WriteString("|---|------------|-----:|----------------:|\n")
+		for i, e := range m.SlowestWFTemplates {
+			b.WriteString(fmt.Sprintf("| %d | %s | %s | %s |\n",
+				i+1, e.Name, e.Phase, mdDuration(e.Duration)))
+		}
+		b.WriteString("\n")
+	}
+
 	// ── Slowest workflows ─────────────────────────────────────────────────────
 	if len(m.SlowestWorkflows) > 0 {
 		b.WriteString("## Slowest Workflows (Top 10)\n\n")
@@ -178,15 +222,16 @@ func RenderMarkdown(report *models.Report) string {
 	// ── Recurring patterns ────────────────────────────────────────────────────
 	if len(report.Patterns) > 0 {
 		b.WriteString("## Recurring Failure Patterns\n\n")
-		b.WriteString("| # | Category | Subtype | Template | Occurrences | Workflows | Flaky | Representative Message |\n")
-		b.WriteString("|---|----------|---------|----------|------------:|----------:|:-----:|------------------------|\n")
+		b.WriteString("| # | WF Template | Category | Subtype | Template | Occurrences | Workflows | Flaky | Representative Message |\n")
+		b.WriteString("|---|------------|----------|---------|----------|------------:|----------:|:-----:|------------------------|\n")
 		for i, p := range report.Patterns {
 			flaky := ""
 			if p.IsFlaky {
 				flaky = "✓"
 			}
-			b.WriteString(fmt.Sprintf("| %d | %s | `%s` | %s | %d | %d | %s | %s |\n",
+			b.WriteString(fmt.Sprintf("| %d | %s | %s | `%s` | %s | %d | %d | %s | %s |\n",
 				i+1,
+				mdDash(strings.Join(p.AffectedWFTemplates, ", ")),
 				string(p.Category),
 				string(p.Subtype),
 				mdCode(p.TemplateName),
@@ -371,6 +416,90 @@ func renderStorageFormat(report *models.Report) string {
 		b.WriteString(sfTable([]string{"Scope", "Count", "Min", "Max", "Mean", "Median"}, rows))
 	}
 
+	// ── Per-template metrics ─────────────────────────────────────────────────
+	if len(m.ByTemplate) > 0 {
+		b.WriteString("## Metrics by Workflow Template\n\n")
+
+		// Counts table
+		b.WriteString("### Run Counts\n\n")
+		b.WriteString("| WF Template | Total | Successful | Failed | Fail % | PLT | APP | DEV | UNK |\n")
+		b.WriteString("|-------------|------:|-----------:|-------:|-------:|----:|----:|----:|----:|\n")
+		for _, name := range sortedKeys(m.ByTemplate) {
+			s := m.ByTemplate[name]
+			b.WriteString(fmt.Sprintf("| %s | %d | %d | %d | %s | %d | %d | %d | %d |\n",
+				name, s.TotalCount, s.SuccessCount, s.FailCount,
+				mdPctOf(s.FailCount, s.TotalCount),
+				s.PlatformCount, s.ApplicationCount, s.DevExCount, s.UnknownCount,
+			))
+		}
+		b.WriteString("\n")
+
+		// Duration table
+		b.WriteString("### Durations\n\n")
+		b.WriteString("| WF Template | Scope | Count | Min | Max | Mean | Median |\n")
+		b.WriteString("|-------------|-------|------:|----:|----:|-----:|-------:|\n")
+		for _, name := range sortedKeys(m.ByTemplate) {
+			s := m.ByTemplate[name]
+			writeMDTmplDurRow(&b, name, "All", s.AllDuration)
+			writeMDTmplDurRow(&b, "", "  Successful", s.SuccessDuration)
+			writeMDTmplDurRow(&b, "", "  Failed", s.FailedDuration)
+		}
+		b.WriteString("\n")
+	}
+
+	// ── Per-template metrics ─────────────────────────────────────────────────
+	if len(m.ByTemplate) > 0 {
+		b.WriteString("<h2>Metrics by Workflow Template</h2>\n")
+		b.WriteString("<h3>Run Counts</h3>\n")
+		countRows := [][]string{}
+		for _, name := range sortedKeys(m.ByTemplate) {
+			s := m.ByTemplate[name]
+			countRows = append(countRows, []string{
+				xmlEsc(name),
+				itoa(s.TotalCount), itoa(s.SuccessCount), itoa(s.FailCount),
+				sfPctOf(s.FailCount, s.TotalCount),
+				itoa(s.PlatformCount), itoa(s.ApplicationCount),
+				itoa(s.DevExCount), itoa(s.UnknownCount),
+			})
+		}
+		b.WriteString(sfTable(
+			[]string{"WF Template", "Total", "Successful", "Failed", "Fail %", "PLT", "APP", "DEV", "UNK"},
+			countRows,
+		))
+		b.WriteString("<h3>Durations</h3>\n")
+		durRows := [][]string{}
+		for _, name := range sortedKeys(m.ByTemplate) {
+			s := m.ByTemplate[name]
+			addSFTmplRow := func(label string, ds models.DurationStats) {
+				if ds.Count == 0 {
+					return
+				}
+				durRows = append(durRows, []string{
+					xmlEsc(name), xmlEsc(label),
+					itoa(ds.Count), sfDuration(ds.Min), sfDuration(ds.Max),
+					sfDuration(ds.Mean), sfDuration(ds.Median),
+				})
+			}
+			addSFTmplRow("All", s.AllDuration)
+			addSFTmplRow("Successful", s.SuccessDuration)
+			addSFTmplRow("Failed", s.FailedDuration)
+		}
+		b.WriteString(sfTable(
+			[]string{"WF Template", "Scope", "Count", "Min", "Max", "Mean", "Median"},
+			durRows,
+		))
+	}
+
+	// ── Slowest WF templates ─────────────────────────────────────────────────
+	if len(m.SlowestWFTemplates) > 0 {
+		b.WriteString("<h2>Slowest Workflow Templates (Top 10, by median duration)</h2>\n")
+		rows := make([][]string, len(m.SlowestWFTemplates))
+		for i, e := range m.SlowestWFTemplates {
+			rows[i] = []string{itoa(i + 1), sfCode(e.Name), xmlEsc(e.Phase), sfDuration(e.Duration)}
+		}
+		b.WriteString(sfTable([]string{"#", "WF Template", "Runs", "Median Duration"}, rows))
+	}
+
 	// ── Slowest workflows ─────────────────────────────────────────────────────
 	if len(m.SlowestWorkflows) > 0 {
 		b.WriteString("<h2>Slowest Workflows (Top 10)</h2>\n")
@@ -410,8 +539,10 @@ func renderStorageFormat(report *models.Report) string {
 			if p.IsFlaky {
 				flaky = "✓"
 			}
+			wfTmplStr := strings.Join(p.AffectedWFTemplates, ", ")
 			rows[i] = []string{
 				itoa(i + 1),
+				sfDash(wfTmplStr),
 				string(p.Category),
 				sfCode(string(p.Subtype)),
 				sfDash(p.TemplateName),
@@ -422,7 +553,7 @@ func renderStorageFormat(report *models.Report) string {
 			}
 		}
 		b.WriteString(sfTable(
-			[]string{"#", "Category", "Subtype", "Template", "Occurrences", "Workflows", "Flaky", "Representative Message"},
+			[]string{"#", "WF Template", "Category", "Subtype", "Template", "Occurrences", "Workflows", "Flaky", "Representative Message"},
 			rows,
 		))
 	}
@@ -853,4 +984,26 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n-3] + "..."
+}
+
+// sortedKeys returns the keys of a WorkflowTemplateStats map in sorted order
+// so tables render consistently across runs.
+func sortedKeys(m map[string]models.WorkflowTemplateStats) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func writeMDTmplDurRow(b *strings.Builder, tmpl, scope string, s models.DurationStats) {
+	if s.Count == 0 {
+		return
+	}
+	b.WriteString(fmt.Sprintf("| %s | %s | %d | %s | %s | %s | %s |\n",
+		tmpl, scope, s.Count,
+		mdDuration(s.Min), mdDuration(s.Max),
+		mdDuration(s.Mean), mdDuration(s.Median),
+	))
 }

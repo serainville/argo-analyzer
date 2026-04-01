@@ -248,7 +248,13 @@ func computeMetrics(
 		m.FailurePercentage = float64(m.FailedCount) / float64(terminal) * 100
 	}
 
-	// ── Duration collection (all terminal workflows) ───────────────────────────
+	// ── Duration collection — all terminal workflows, bucketed by template ─────
+	type tmplDurs struct {
+		all, failed, success                []time.Duration
+		totalCount, failCount, successCount int
+	}
+	tmplData := map[string]*tmplDurs{}
+
 	var allDurations, failedDurations, successDurations []time.Duration
 	var slowestWF []models.SlowestEntry
 
@@ -263,6 +269,17 @@ func computeMetrics(
 			continue
 		}
 
+		tmplName := wf.Metadata.Labels[labelWorkflowTemplate]
+		if tmplName == "" {
+			tmplName = "(unknown)"
+		}
+		if tmplData[tmplName] == nil {
+			tmplData[tmplName] = &tmplDurs{}
+		}
+		td := tmplData[tmplName]
+		td.totalCount++
+		td.all = append(td.all, d)
+
 		allDurations = append(allDurations, d)
 		slowestWF = append(slowestWF, models.SlowestEntry{
 			Name:         wf.Metadata.Name,
@@ -274,8 +291,12 @@ func computeMetrics(
 		switch {
 		case isFailedPhase(wf.Status.Phase):
 			failedDurations = append(failedDurations, d)
+			td.failCount++
+			td.failed = append(td.failed, d)
 		case wf.Status.Phase == phaseSucceeded:
 			successDurations = append(successDurations, d)
+			td.successCount++
+			td.success = append(td.success, d)
 		}
 	}
 
@@ -294,10 +315,20 @@ func computeMetrics(
 	}
 
 	// ── Category breakdown + template stats (failed nodes) ────────────────────
+	tmplNodeCats := map[string]map[models.FailureCategory]int{}
 	templateCats := map[string]map[models.FailureCategory]int{}
 	var slowestNodes []models.SlowestEntry
 
 	for _, wf := range failed {
+		// Per-WF-template node category counts
+		wfTmpl := wf.WorkflowTemplate
+		if wfTmpl == "" {
+			wfTmpl = "(unknown)"
+		}
+		if tmplNodeCats[wfTmpl] == nil {
+			tmplNodeCats[wfTmpl] = map[models.FailureCategory]int{}
+		}
+
 		for _, node := range wf.FailedNodes {
 			switch node.Classification.Category {
 			case models.CategoryPlatform:
@@ -309,15 +340,17 @@ func computeMetrics(
 			default:
 				m.UnknownCount++
 			}
+			tmplNodeCats[wfTmpl][node.Classification.Category]++
 
-			tmpl := node.TemplateName
-			if tmpl == "" {
-				tmpl = "(unknown)"
+			// For top-failing-templates (keyed by node template, not wf template)
+			nodeTmpl := node.TemplateName
+			if nodeTmpl == "" {
+				nodeTmpl = "(unknown)"
 			}
-			if templateCats[tmpl] == nil {
-				templateCats[tmpl] = map[models.FailureCategory]int{}
+			if templateCats[nodeTmpl] == nil {
+				templateCats[nodeTmpl] = map[models.FailureCategory]int{}
 			}
-			templateCats[tmpl][node.Classification.Category]++
+			templateCats[nodeTmpl][node.Classification.Category]++
 
 			if node.Duration > 0 {
 				slowestNodes = append(slowestNodes, models.SlowestEntry{
@@ -341,7 +374,52 @@ func computeMetrics(
 		m.SlowestTemplates = slowestNodes
 	}
 
-	// Top-10 failing templates by failure count
+	// ── Assemble ByTemplate + SlowestWFTemplates ────────────────────────────
+	m.ByTemplate = make(map[string]models.WorkflowTemplateStats)
+	for tmplName, td := range tmplData {
+		ncats := tmplNodeCats[tmplName] // may be nil for templates with no failures
+		m.ByTemplate[tmplName] = models.WorkflowTemplateStats{
+			TemplateName:     tmplName,
+			TotalCount:       td.totalCount,
+			SuccessCount:     td.successCount,
+			FailCount:        td.failCount,
+			PlatformCount:    ncats[models.CategoryPlatform],
+			ApplicationCount: ncats[models.CategoryApplication],
+			DevExCount:       ncats[models.CategoryDevEx],
+			UnknownCount:     ncats[models.CategoryUnknown],
+			AllDuration:      durationStats(td.all),
+			SuccessDuration:  durationStats(td.success),
+			FailedDuration:   durationStats(td.failed),
+		}
+	}
+
+	// Top-10 slowest workflow templates by median duration (all runs)
+	type tmplMedian struct {
+		name   string
+		median time.Duration
+	}
+	var tmplRank []tmplMedian
+	for name, s := range m.ByTemplate {
+		if s.AllDuration.Count > 0 {
+			tmplRank = append(tmplRank, tmplMedian{name, s.AllDuration.Median})
+		}
+	}
+	sort.Slice(tmplRank, func(i, j int) bool {
+		return tmplRank[i].median > tmplRank[j].median
+	})
+	if len(tmplRank) > 10 {
+		tmplRank = tmplRank[:10]
+	}
+	for _, e := range tmplRank {
+		s := m.ByTemplate[e.name]
+		m.SlowestWFTemplates = append(m.SlowestWFTemplates, models.SlowestEntry{
+			Name:     e.name,
+			Phase:    fmt.Sprintf("%d runs", s.TotalCount),
+			Duration: e.median,
+		})
+	}
+
+	// Top-10 failing templates by failure count (node-template granularity)
 	type tEntry struct {
 		name  string
 		count int
