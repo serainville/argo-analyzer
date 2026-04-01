@@ -1,3 +1,13 @@
+// Package reporter renders a Report to the console (tablewriter), CSV, and JSON.
+//
+// Console sections (in order):
+//  1. Header + query info
+//  2. Metrics (totals + category breakdown)
+//  3. Top failing templates
+//  4. Failure patterns (cross-workflow)
+//  5. DevEx insights (actionable recommendations)
+//  6. Failed workflow summary
+//  7. Failed node details
 package reporter
 
 import (
@@ -6,6 +16,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"argo-analyzer/internal/models"
@@ -13,158 +24,313 @@ import (
 	"github.com/olekukonko/tablewriter"
 )
 
-// Options controls reporter output behavior
+// Options controls reporter output.
 type Options struct {
-	OutputDir string
 	JSONFile  string
 	CSVFile   string
 	NoConsole bool
-	Verbose   bool
+	Verbose   bool // show node IDs and classifier reasoning
 }
 
-// Generate produces all configured outputs for the report
+// Generate writes all configured outputs.
 func Generate(report *models.Report, opts Options) error {
 	if !opts.NoConsole {
 		printConsole(report, opts.Verbose)
 	}
-
 	if opts.CSVFile != "" {
 		if err := writeCSV(report, opts.CSVFile); err != nil {
 			return fmt.Errorf("writing CSV: %w", err)
 		}
-		fmt.Printf("\n✓ CSV report written to: %s\n", opts.CSVFile)
+		fmt.Printf("✓ CSV  → %s\n", opts.CSVFile)
 	}
-
 	if opts.JSONFile != "" {
 		if err := writeJSON(report, opts.JSONFile); err != nil {
 			return fmt.Errorf("writing JSON: %w", err)
 		}
-		fmt.Printf("✓ JSON report written to: %s\n", opts.JSONFile)
+		fmt.Printf("✓ JSON → %s\n", opts.JSONFile)
 	}
-
 	return nil
 }
 
-// printConsole renders the report to stdout using tablewriter
-func printConsole(report *models.Report, verbose bool) {
+// ── Console ───────────────────────────────────────────────────────────────────
+
+func printConsole(r *models.Report, verbose bool) {
+	sep := strings.Repeat("═", 72)
+	thin := strings.Repeat("─", 72)
+
 	fmt.Println()
-	fmt.Println("════════════════════════════════════════════════════════════════")
-	fmt.Println("                ARGO WORKFLOWS FAILURE REPORT                  ")
-	fmt.Println("════════════════════════════════════════════════════════════════")
-	fmt.Printf("  Generated at : %s\n", report.GeneratedAt.Format(time.RFC1123))
-	fmt.Printf("  Query        : %s = %s\n", report.QueryType, report.QueryValue)
+	fmt.Println(sep)
+	fmt.Println("         ARGO WORKFLOWS — FAILURE ANALYSIS REPORT")
+	fmt.Println(sep)
+	fmt.Printf("  Generated : %s\n", r.GeneratedAt.Format(time.RFC1123))
+	fmt.Printf("  Query     : %s = %s\n", r.QueryType, r.QueryValue)
 	fmt.Println()
 
-	// ── Metrics summary ──────────────────────────────────────────────────────
-	fmt.Println("  METRICS")
-	fmt.Println("  ───────────────────────────────────────────")
+	printMetrics(r)
+	printDurationMetrics(r)
+	printTopTemplates(r)
+	printSlowestLists(r)
 
-	metricsTable := tablewriter.NewWriter(os.Stdout)
-	metricsTable.SetHeader([]string{"Metric", "Count", "Percentage"})
-	metricsTable.SetBorder(false)
-	metricsTable.SetColumnSeparator("│")
-	metricsTable.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-	metricsTable.SetAlignment(tablewriter.ALIGN_LEFT)
-	metricsTable.SetHeaderLine(true)
-	metricsTable.SetTablePadding("  ")
-
-	metricsTable.Append([]string{
-		"Total Workflows",
-		strconv.Itoa(report.TotalWorkflows),
-		"—",
-	})
-	metricsTable.Append([]string{
-		"Successful",
-		strconv.Itoa(report.SuccessfulCount),
-		fmt.Sprintf("%.1f%%", report.SuccessPercentage),
-	})
-	metricsTable.Append([]string{
-		"Failed",
-		strconv.Itoa(report.FailedCount),
-		fmt.Sprintf("%.1f%%", report.FailurePercentage),
-	})
-	metricsTable.Render()
-
-	if report.FailedCount == 0 {
-		fmt.Println("\n  ✓ No failed workflows found.")
+	if r.Metrics.FailedCount == 0 {
+		fmt.Println("  ✓ No failed workflows found.")
 		fmt.Println()
 		return
 	}
 
-	// ── Failed workflows summary ──────────────────────────────────────────────
+	printPatterns(r, thin)
+	printInsights(r, thin)
+	printFailedWorkflows(r, thin)
+	printNodeDetails(r, thin, verbose)
+}
+
+func printMetrics(r *models.Report) {
+	m := r.Metrics
+	fmt.Println("  ── METRICS ─────────────────────────────────────────────────────────")
 	fmt.Println()
-	fmt.Println("  FAILED WORKFLOWS")
-	fmt.Println("  ───────────────────────────────────────────")
 
-	wfTable := tablewriter.NewWriter(os.Stdout)
-	wfTable.SetHeader([]string{"Workflow", "Namespace", "Phase", "Duration", "Failed Nodes", "Message"})
-	wfTable.SetBorder(false)
-	wfTable.SetColumnSeparator("│")
-	wfTable.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-	wfTable.SetAlignment(tablewriter.ALIGN_LEFT)
-	wfTable.SetHeaderLine(true)
-	wfTable.SetTablePadding("  ")
-	wfTable.SetColWidth(40)
-	wfTable.SetAutoWrapText(true)
+	t := newTable([]string{"Metric", "Count", "%"})
+	t.Append(row("Total workflows", itoa(m.TotalWorkflows), ""))
+	t.Append(row("  Successful", itoa(m.SuccessfulCount), pct(m.SuccessPercentage)))
+	t.Append(row("  Failed", itoa(m.FailedCount), pct(m.FailurePercentage)))
+	t.Render()
 
-	for _, wf := range report.FailedWorkflows {
-		msg := truncate(wf.Message, 60)
-		if msg == "" && len(wf.FailedNodes) > 0 {
-			msg = truncate(wf.FailedNodes[0].Message, 60)
-		}
-		wfTable.Append([]string{
-			wf.Name,
-			wf.Namespace,
-			wf.Phase,
-			formatDuration(wf.Duration),
-			strconv.Itoa(len(wf.FailedNodes)),
-			msg,
-		})
+	if m.FailedCount == 0 {
+		return
 	}
-	wfTable.Render()
 
-	// ── Failed node details ───────────────────────────────────────────────────
 	fmt.Println()
-	fmt.Println("  FAILED NODE DETAILS")
-	fmt.Println("  ───────────────────────────────────────────")
+	fmt.Println("  ── FAILURE BREAKDOWN BY CATEGORY ───────────────────────────────────")
+	fmt.Println()
 
-	nodeTable := tablewriter.NewWriter(os.Stdout)
-	headers := []string{"Workflow", "Node", "Template", "Phase", "Exit Code", "Duration", "Failure Reason"}
-	if verbose {
-		headers = append(headers, "Node ID")
-	}
-	nodeTable.SetHeader(headers)
-	nodeTable.SetBorder(false)
-	nodeTable.SetColumnSeparator("│")
-	nodeTable.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
-	nodeTable.SetAlignment(tablewriter.ALIGN_LEFT)
-	nodeTable.SetHeaderLine(true)
-	nodeTable.SetTablePadding("  ")
-	nodeTable.SetColWidth(45)
-	nodeTable.SetAutoWrapText(true)
-
-	for _, wf := range report.FailedWorkflows {
-		for _, node := range wf.FailedNodes {
-			row := []string{
-				wf.Name,
-				node.NodeName,
-				node.TemplateName,
-				node.Phase,
-				exitCodeDisplay(node.ExitCode),
-				formatDuration(node.Duration),
-				truncate(node.Message, 80),
-			}
-			if verbose {
-				row = append(row, node.NodeID)
-			}
-			nodeTable.Append(row)
-		}
-	}
-	nodeTable.Render()
+	t2 := newTable([]string{"Category", "Count", "% of Failures", "Meaning"})
+	t2.Append(row(
+		"Platform",
+		itoa(m.PlatformCount),
+		pctOf(m.PlatformCount, m.FailedCount),
+		"Infrastructure, scheduler, Argo controller",
+	))
+	t2.Append(row(
+		"Application",
+		itoa(m.ApplicationCount),
+		pctOf(m.ApplicationCount, m.FailedCount),
+		"User workload code or configuration",
+	))
+	t2.Append(row(
+		"DevEx gap",
+		itoa(m.DevExCount),
+		pctOf(m.DevExCount, m.FailedCount),
+		"Missing guardrails, retries, validation, docs",
+	))
+	t2.Append(row(
+		"Unknown",
+		itoa(m.UnknownCount),
+		pctOf(m.UnknownCount, m.FailedCount),
+		"Could not be classified",
+	))
+	t2.Render()
 	fmt.Println()
 }
 
-// writeCSV writes a flat CSV of all failed nodes
+func printTopTemplates(r *models.Report) {
+	if len(r.Metrics.TopFailingTemplates) == 0 {
+		return
+	}
+	fmt.Println("  ── TOP FAILING TEMPLATES ───────────────────────────────────────────")
+	fmt.Println()
+
+	t := newTable([]string{"#", "Template", "Failures", "Dominant Category"})
+	for i, tf := range r.Metrics.TopFailingTemplates {
+		t.Append(row(
+			strconv.Itoa(i+1),
+			tf.TemplateName,
+			itoa(tf.Count),
+			string(tf.DominantCategory),
+		))
+	}
+	t.Render()
+	fmt.Println()
+}
+
+func printDurationMetrics(r *models.Report) {
+	m := r.Metrics
+	// Only render if we have at least one data point
+	if m.AllWorkflowDuration.Count == 0 {
+		return
+	}
+	fmt.Println("  ── DURATION METRICS ────────────────────────────────────────────────")
+	fmt.Println()
+
+	t := newTable([]string{"Scope", "Count", "Min", "Max", "Mean", "Median"})
+	addDurationRow := func(label string, s models.DurationStats) {
+		if s.Count == 0 {
+			return
+		}
+		t.Append(row(
+			label,
+			itoa(s.Count),
+			formatDuration(s.Min),
+			formatDuration(s.Max),
+			formatDuration(s.Mean),
+			formatDuration(s.Median),
+		))
+	}
+	addDurationRow("All (terminal)", m.AllWorkflowDuration)
+	addDurationRow("  Successful", m.SuccessfulDuration)
+	addDurationRow("  Failed", m.FailedDuration)
+	t.Render()
+	fmt.Println()
+}
+
+func printSlowestLists(r *models.Report) {
+	m := r.Metrics
+	if len(m.SlowestWorkflows) == 0 && len(m.SlowestTemplates) == 0 {
+		return
+	}
+
+	if len(m.SlowestWorkflows) > 0 {
+		fmt.Println("  ── SLOWEST WORKFLOWS ───────────────────────────────────────────────")
+		fmt.Println()
+		t := newTable([]string{"#", "Workflow", "WF Template", "Phase", "Duration"})
+		for i, e := range m.SlowestWorkflows {
+			t.Append(row(
+				strconv.Itoa(i+1),
+				e.Name,
+				orDash(e.TemplateName),
+				e.Phase,
+				formatDuration(e.Duration),
+			))
+		}
+		t.Render()
+		fmt.Println()
+	}
+
+	if len(m.SlowestTemplates) > 0 {
+		fmt.Println("  ── SLOWEST FAILED TEMPLATE STEPS ──────────────────────────────────")
+		fmt.Println()
+		t := newTable([]string{"#", "Node", "Template", "Workflow", "Duration"})
+		for i, e := range m.SlowestTemplates {
+			t.Append(row(
+				strconv.Itoa(i+1),
+				e.Name,
+				orDash(e.TemplateName),
+				e.WorkflowName,
+				formatDuration(e.Duration),
+			))
+		}
+		t.Render()
+		fmt.Println()
+	}
+}
+
+func printPatterns(r *models.Report, thin string) {
+	if len(r.Patterns) == 0 {
+		return
+	}
+	fmt.Println("  ── RECURRING FAILURE PATTERNS ──────────────────────────────────────")
+	fmt.Println()
+
+	t := newTable([]string{"#", "Category", "Subtype", "Template", "Hits", "Workflows", "Flaky", "Representative Message"})
+	for i, p := range r.Patterns {
+		flaky := ""
+		if p.IsFlaky {
+			flaky = "✓"
+		}
+		t.Append(row(
+			strconv.Itoa(i+1),
+			string(p.Category),
+			string(p.Subtype),
+			orDash(p.TemplateName),
+			itoa(p.OccurrenceCount),
+			itoa(len(p.AffectedWorkflows)),
+			flaky,
+			truncate(p.RepresentativeMessage, 55),
+		))
+	}
+	t.Render()
+	fmt.Println()
+	_ = thin
+}
+
+func printInsights(r *models.Report, _ string) {
+	if len(r.Insights) == 0 {
+		return
+	}
+	fmt.Println("  ── DEVEX INSIGHTS & RECOMMENDATIONS ────────────────────────────────")
+	fmt.Println()
+
+	for i, ins := range r.Insights {
+		priorityIcon := priorityIcon(ins.Priority)
+		fmt.Printf("  %d. %s [%s] %s\n", i+1, priorityIcon, strings.ToUpper(string(ins.Priority)), ins.Title)
+		fmt.Printf("     %s\n", wordWrap(ins.Description, 68, "     "))
+		fmt.Printf("     → %s\n", wordWrap(ins.Recommendation, 66, "       "))
+		if ins.SupportingData != "" {
+			fmt.Printf("     Data: %s\n", ins.SupportingData)
+		}
+		fmt.Println()
+	}
+}
+
+func printFailedWorkflows(r *models.Report, _ string) {
+	fmt.Println("  ── FAILED WORKFLOWS ────────────────────────────────────────────────")
+	fmt.Println()
+
+	t := newTable([]string{"Workflow", "Template", "Namespace", "Duration", "Failed Nodes", "Categories"})
+	for _, wf := range r.FailedWorkflows {
+		cats := categoryBadges(wf.FailedNodes)
+		wfTemplate := ""
+		if len(wf.FailedNodes) > 0 {
+			wfTemplate = wf.FailedNodes[0].WorkflowTemplate
+		}
+		t.Append(row(
+			wf.Name,
+			orDash(wfTemplate),
+			wf.Namespace,
+			formatDuration(wf.Duration),
+			itoa(len(wf.FailedNodes)),
+			cats,
+		))
+	}
+	t.Render()
+	fmt.Println()
+}
+
+func printNodeDetails(r *models.Report, _ string, verbose bool) {
+	fmt.Println("  ── FAILED NODE DETAILS ─────────────────────────────────────────────")
+	fmt.Println()
+
+	headers := []string{"WF Template", "Node", "Template", "Path", "Category", "Subtype", "Conf.", "Exit", "Failure Reason"}
+	if verbose {
+		headers = append(headers, "Classifier Reasoning")
+	}
+
+	t := newTable(headers)
+	for _, wf := range r.FailedWorkflows {
+		for _, node := range wf.FailedNodes {
+			c := node.Classification
+			pathStr := strings.Join(node.NodePath, " → ")
+			r := []string{
+				orDash(node.WorkflowTemplate),
+				node.NodeName,
+				orDash(node.TemplateName),
+				truncate(pathStr, 55),
+				string(c.Category),
+				string(c.Subtype),
+				string(c.Confidence),
+				orDash(node.ExitCode),
+				truncate(node.Message, 55),
+			}
+			if verbose {
+				r = append(r, truncate(c.Reasoning, 80))
+			}
+			t.Append(r)
+		}
+	}
+	t.Render()
+	fmt.Println()
+}
+
+// ── CSV ───────────────────────────────────────────────────────────────────────
+
 func writeCSV(report *models.Report, path string) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -175,23 +341,15 @@ func writeCSV(report *models.Report, path string) error {
 	w := csv.NewWriter(f)
 	defer w.Flush()
 
+	// Sheet 1 style: all failed nodes (flat)
 	header := []string{
-		"workflow_name",
-		"namespace",
-		"workflow_phase",
-		"workflow_started_at",
-		"workflow_finished_at",
-		"workflow_duration_sec",
-		"workflow_message",
-		"node_id",
-		"node_name",
-		"template_name",
-		"node_phase",
-		"node_exit_code",
-		"node_started_at",
-		"node_finished_at",
-		"node_duration_sec",
-		"node_failure_reason",
+		"workflow_name", "workflow_template", "namespace", "workflow_phase",
+		"workflow_started_at", "workflow_finished_at", "workflow_duration_sec",
+		"node_id", "node_name", "node_path", "template_name",
+		"node_phase", "node_exit_code",
+		"node_started_at", "node_finished_at", "node_duration_sec",
+		"failure_message",
+		"category", "subtype", "confidence", "classified_by", "reasoning",
 	}
 	if err := w.Write(header); err != nil {
 		return err
@@ -199,51 +357,86 @@ func writeCSV(report *models.Report, path string) error {
 
 	for _, wf := range report.FailedWorkflows {
 		for _, node := range wf.FailedNodes {
-			row := []string{
-				wf.Name,
-				wf.Namespace,
-				wf.Phase,
-				timeStr(wf.StartedAt),
-				timeStr(wf.FinishedAt),
-				durationSec(wf.Duration),
-				wf.Message,
-				node.NodeID,
-				node.NodeName,
-				node.TemplateName,
-				node.Phase,
-				node.ExitCode,
-				timeStr(node.StartedAt),
-				timeStr(node.FinishedAt),
-				durationSec(node.Duration),
+			c := node.Classification
+			pathStr := strings.Join(node.NodePath, " → ")
+			if err := w.Write([]string{
+				wf.Name, node.WorkflowTemplate, wf.Namespace, wf.Phase,
+				timeStr(wf.StartedAt), timeStr(wf.FinishedAt), durationSec(wf.Duration),
+				node.NodeID, node.NodeName, pathStr, node.TemplateName,
+				node.Phase, node.ExitCode,
+				timeStr(node.StartedAt), timeStr(node.FinishedAt), durationSec(node.Duration),
 				node.Message,
-			}
-			if err := w.Write(row); err != nil {
+				string(c.Category), string(c.Subtype), string(c.Confidence), c.ClassifiedBy, c.Reasoning,
+			}); err != nil {
 				return err
 			}
 		}
 	}
-
 	return nil
 }
 
-// JSONReport is the serialisable structure for JSON output
-type JSONReport struct {
-	GeneratedAt     string         `json:"generated_at"`
-	QueryType       string         `json:"query_type"`
-	QueryValue      string         `json:"query_value"`
-	Metrics         JSONMetrics    `json:"metrics"`
-	FailedWorkflows []JSONWorkflow `json:"failed_workflows"`
+// ── JSON ──────────────────────────────────────────────────────────────────────
+
+type jsonReport struct {
+	GeneratedAt     string                `json:"generated_at"`
+	QueryType       string                `json:"query_type"`
+	QueryValue      string                `json:"query_value"`
+	Metrics         jsonMetrics           `json:"metrics"`
+	Patterns        []jsonPattern         `json:"patterns"`
+	Insights        []models.DevExInsight `json:"insights"`
+	FailedWorkflows []jsonWorkflow        `json:"failed_workflows"`
 }
 
-type JSONMetrics struct {
-	TotalWorkflows    int     `json:"total_workflows"`
-	SuccessfulCount   int     `json:"successful_count"`
-	FailedCount       int     `json:"failed_count"`
-	SuccessPercentage float64 `json:"success_percentage"`
-	FailurePercentage float64 `json:"failure_percentage"`
+type jsonDurationStats struct {
+	Count     int     `json:"count"`
+	MinSec    float64 `json:"min_sec"`
+	MaxSec    float64 `json:"max_sec"`
+	MeanSec   float64 `json:"mean_sec"`
+	MedianSec float64 `json:"median_sec"`
 }
 
-type JSONWorkflow struct {
+type jsonSlowestEntry struct {
+	Name         string  `json:"name"`
+	WorkflowName string  `json:"workflow_name,omitempty"`
+	TemplateName string  `json:"template_name,omitempty"`
+	Phase        string  `json:"phase"`
+	DurationSec  float64 `json:"duration_sec"`
+}
+
+type jsonMetrics struct {
+	TotalWorkflows      int                           `json:"total_workflows"`
+	SuccessfulCount     int                           `json:"successful_count"`
+	FailedCount         int                           `json:"failed_count"`
+	SuccessPercentage   float64                       `json:"success_percentage"`
+	FailurePercentage   float64                       `json:"failure_percentage"`
+	PlatformCount       int                           `json:"platform_failures"`
+	ApplicationCount    int                           `json:"application_failures"`
+	DevExCount          int                           `json:"devex_failures"`
+	UnknownCount        int                           `json:"unknown_failures"`
+	TopFailingTemplates []models.TemplateFailureCount `json:"top_failing_templates"`
+	DurationAll         jsonDurationStats             `json:"duration_all_workflows"`
+	DurationFailed      jsonDurationStats             `json:"duration_failed_workflows"`
+	DurationSuccessful  jsonDurationStats             `json:"duration_successful_workflows"`
+	SlowestWorkflows    []jsonSlowestEntry            `json:"slowest_workflows"`
+	SlowestTemplates    []jsonSlowestEntry            `json:"slowest_template_steps"`
+}
+
+type jsonPattern struct {
+	PatternKey            string   `json:"pattern_key"`
+	Category              string   `json:"category"`
+	Subtype               string   `json:"subtype"`
+	TemplateName          string   `json:"template_name,omitempty"`
+	OccurrenceCount       int      `json:"occurrence_count"`
+	AffectedWorkflows     []string `json:"affected_workflows"`
+	AffectedNamespaces    []string `json:"affected_namespaces"`
+	FirstSeen             string   `json:"first_seen,omitempty"`
+	LastSeen              string   `json:"last_seen,omitempty"`
+	IsFlaky               bool     `json:"is_flaky"`
+	TypicalExitCodes      []string `json:"typical_exit_codes,omitempty"`
+	RepresentativeMessage string   `json:"representative_message"`
+}
+
+type jsonWorkflow struct {
 	Name        string     `json:"name"`
 	Namespace   string     `json:"namespace"`
 	Phase       string     `json:"phase"`
@@ -251,38 +444,73 @@ type JSONWorkflow struct {
 	FinishedAt  string     `json:"finished_at"`
 	DurationSec float64    `json:"duration_sec"`
 	Message     string     `json:"message,omitempty"`
-	FailedNodes []JSONNode `json:"failed_nodes"`
+	FailedNodes []jsonNode `json:"failed_nodes"`
 }
 
-type JSONNode struct {
-	NodeID       string  `json:"node_id"`
-	NodeName     string  `json:"node_name"`
-	TemplateName string  `json:"template_name,omitempty"`
-	Phase        string  `json:"phase"`
-	ExitCode     string  `json:"exit_code,omitempty"`
-	StartedAt    string  `json:"started_at"`
-	FinishedAt   string  `json:"finished_at"`
-	DurationSec  float64 `json:"duration_sec"`
-	Message      string  `json:"message,omitempty"`
+type jsonNode struct {
+	WorkflowTemplate string                `json:"workflow_template,omitempty"`
+	NodeID           string                `json:"node_id"`
+	NodeName         string                `json:"node_name"`
+	NodePath         []string              `json:"node_path"`
+	TemplateName     string                `json:"template_name,omitempty"`
+	Phase            string                `json:"phase"`
+	ExitCode         string                `json:"exit_code,omitempty"`
+	StartedAt        string                `json:"started_at"`
+	FinishedAt       string                `json:"finished_at"`
+	DurationSec      float64               `json:"duration_sec"`
+	Message          string                `json:"message,omitempty"`
+	Classification   models.Classification `json:"classification"`
 }
 
-// writeJSON writes the full report as a JSON file
 func writeJSON(report *models.Report, path string) error {
-	jr := JSONReport{
+	jr := jsonReport{
 		GeneratedAt: report.GeneratedAt.Format(time.RFC3339),
 		QueryType:   report.QueryType,
 		QueryValue:  report.QueryValue,
-		Metrics: JSONMetrics{
-			TotalWorkflows:    report.TotalWorkflows,
-			SuccessfulCount:   report.SuccessfulCount,
-			FailedCount:       report.FailedCount,
-			SuccessPercentage: roundTo(report.SuccessPercentage, 2),
-			FailurePercentage: roundTo(report.FailurePercentage, 2),
+		Metrics: jsonMetrics{
+			TotalWorkflows:      report.Metrics.TotalWorkflows,
+			SuccessfulCount:     report.Metrics.SuccessfulCount,
+			FailedCount:         report.Metrics.FailedCount,
+			SuccessPercentage:   round2(report.Metrics.SuccessPercentage),
+			FailurePercentage:   round2(report.Metrics.FailurePercentage),
+			PlatformCount:       report.Metrics.PlatformCount,
+			ApplicationCount:    report.Metrics.ApplicationCount,
+			DevExCount:          report.Metrics.DevExCount,
+			UnknownCount:        report.Metrics.UnknownCount,
+			TopFailingTemplates: report.Metrics.TopFailingTemplates,
+			DurationAll:         toJSONDuration(report.Metrics.AllWorkflowDuration),
+			DurationFailed:      toJSONDuration(report.Metrics.FailedDuration),
+			DurationSuccessful:  toJSONDuration(report.Metrics.SuccessfulDuration),
+			SlowestWorkflows:    toJSONSlowest(report.Metrics.SlowestWorkflows),
+			SlowestTemplates:    toJSONSlowest(report.Metrics.SlowestTemplates),
 		},
+		Insights: report.Insights,
+	}
+
+	for _, p := range report.Patterns {
+		jp := jsonPattern{
+			PatternKey:            p.PatternKey,
+			Category:              string(p.Category),
+			Subtype:               string(p.Subtype),
+			TemplateName:          p.TemplateName,
+			OccurrenceCount:       p.OccurrenceCount,
+			AffectedWorkflows:     p.AffectedWorkflows,
+			AffectedNamespaces:    p.AffectedNamespaces,
+			IsFlaky:               p.IsFlaky,
+			TypicalExitCodes:      p.TypicalExitCodes,
+			RepresentativeMessage: p.RepresentativeMessage,
+		}
+		if !p.FirstSeen.IsZero() {
+			jp.FirstSeen = p.FirstSeen.Format(time.RFC3339)
+		}
+		if !p.LastSeen.IsZero() {
+			jp.LastSeen = p.LastSeen.Format(time.RFC3339)
+		}
+		jr.Patterns = append(jr.Patterns, jp)
 	}
 
 	for _, wf := range report.FailedWorkflows {
-		jw := JSONWorkflow{
+		jw := jsonWorkflow{
 			Name:        wf.Name,
 			Namespace:   wf.Namespace,
 			Phase:       wf.Phase,
@@ -292,16 +520,19 @@ func writeJSON(report *models.Report, path string) error {
 			Message:     wf.Message,
 		}
 		for _, node := range wf.FailedNodes {
-			jw.FailedNodes = append(jw.FailedNodes, JSONNode{
-				NodeID:       node.NodeID,
-				NodeName:     node.NodeName,
-				TemplateName: node.TemplateName,
-				Phase:        node.Phase,
-				ExitCode:     node.ExitCode,
-				StartedAt:    timeStr(node.StartedAt),
-				FinishedAt:   timeStr(node.FinishedAt),
-				DurationSec:  node.Duration.Seconds(),
-				Message:      node.Message,
+			jw.FailedNodes = append(jw.FailedNodes, jsonNode{
+				WorkflowTemplate: node.WorkflowTemplate,
+				NodeID:           node.NodeID,
+				NodeName:         node.NodeName,
+				NodePath:         node.NodePath,
+				TemplateName:     node.TemplateName,
+				Phase:            node.Phase,
+				ExitCode:         node.ExitCode,
+				StartedAt:        timeStr(node.StartedAt),
+				FinishedAt:       timeStr(node.FinishedAt),
+				DurationSec:      node.Duration.Seconds(),
+				Message:          node.Message,
+				Classification:   node.Classification,
 			})
 		}
 		jr.FailedWorkflows = append(jr.FailedWorkflows, jw)
@@ -312,13 +543,80 @@ func writeJSON(report *models.Report, path string) error {
 		return err
 	}
 	defer f.Close()
-
 	enc := json.NewEncoder(f)
 	enc.SetIndent("", "  ")
 	return enc.Encode(jr)
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// toJSONDuration converts a DurationStats to its JSON-serialisable form.
+func toJSONDuration(s models.DurationStats) jsonDurationStats {
+	return jsonDurationStats{
+		Count:     s.Count,
+		MinSec:    round2(s.Min.Seconds()),
+		MaxSec:    round2(s.Max.Seconds()),
+		MeanSec:   round2(s.Mean.Seconds()),
+		MedianSec: round2(s.Median.Seconds()),
+	}
+}
+
+// toJSONSlowest converts a []SlowestEntry to its JSON-serialisable form.
+func toJSONSlowest(entries []models.SlowestEntry) []jsonSlowestEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]jsonSlowestEntry, len(entries))
+	for i, e := range entries {
+		out[i] = jsonSlowestEntry{
+			Name:         e.Name,
+			WorkflowName: e.WorkflowName,
+			TemplateName: e.TemplateName,
+			Phase:        e.Phase,
+			DurationSec:  round2(e.Duration.Seconds()),
+		}
+	}
+	return out
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+func newTable(headers []string) *tablewriter.Table {
+	t := tablewriter.NewWriter(os.Stdout)
+	t.SetHeader(headers)
+	t.SetBorder(false)
+	t.SetColumnSeparator("│")
+	t.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
+	t.SetAlignment(tablewriter.ALIGN_LEFT)
+	t.SetHeaderLine(true)
+	t.SetTablePadding("  ")
+	t.SetColWidth(40)
+	t.SetAutoWrapText(true)
+	return t
+}
+
+func row(cells ...string) []string { return cells }
+
+func itoa(n int) string { return strconv.Itoa(n) }
+
+func pct(f float64) string {
+	if f == 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%.1f%%", f)
+}
+
+func pctOf(n, total int) string {
+	if total == 0 || n == 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%.1f%%", float64(n)/float64(total)*100)
+}
+
+func orDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
+}
 
 func truncate(s string, n int) string {
 	if len(s) <= n {
@@ -354,17 +652,77 @@ func timeStr(t time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
-func exitCodeDisplay(code string) string {
-	if code == "" {
-		return "—"
-	}
-	return code
+func round2(f float64) float64 {
+	return float64(int(f*100+0.5)) / 100
 }
 
-func roundTo(f float64, decimals int) float64 {
-	pow := 1.0
-	for i := 0; i < decimals; i++ {
-		pow *= 10
+// categoryBadges produces a compact summary of failure categories for a node list.
+func categoryBadges(nodes []models.FailedNode) string {
+	counts := map[models.FailureCategory]int{}
+	for _, n := range nodes {
+		counts[n.Classification.Category]++
 	}
-	return float64(int(f*pow+0.5)) / pow
+	var parts []string
+	for _, cat := range []models.FailureCategory{
+		models.CategoryPlatform,
+		models.CategoryApplication,
+		models.CategoryDevEx,
+		models.CategoryUnknown,
+	} {
+		if n := counts[cat]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s×%d", catAbbrev(cat), n))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func catAbbrev(c models.FailureCategory) string {
+	switch c {
+	case models.CategoryPlatform:
+		return "PLT"
+	case models.CategoryApplication:
+		return "APP"
+	case models.CategoryDevEx:
+		return "DEV"
+	default:
+		return "UNK"
+	}
+}
+
+func priorityIcon(p models.InsightPriority) string {
+	switch p {
+	case models.PriorityHigh:
+		return "●"
+	case models.PriorityMedium:
+		return "◐"
+	default:
+		return "○"
+	}
+}
+
+// wordWrap wraps text at approximately maxWidth chars, indenting continuation
+// lines with the given prefix.
+func wordWrap(s string, maxWidth int, prefix string) string {
+	if len(s) <= maxWidth {
+		return s
+	}
+	words := strings.Fields(s)
+	var lines []string
+	line := ""
+	for _, w := range words {
+		if len(line)+len(w)+1 > maxWidth && line != "" {
+			lines = append(lines, line)
+			line = w
+		} else {
+			if line == "" {
+				line = w
+			} else {
+				line += " " + w
+			}
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n"+prefix)
 }
